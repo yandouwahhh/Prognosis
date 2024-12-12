@@ -1,0 +1,67 @@
+gene <- dd$gene## 转换
+library(clusterProfiler)
+gene = bitr(gene, fromType='SYMBOL', toType='ENTREZID', OrgDb='org.Hs.eg.db')## 去重
+gene <- dplyr::distinct(gene,SYMBOL,.keep_all=TRUE)
+gene_df <- data.frame(logFC=dd$logFC,
+                      SYMBOL = dd$gene)
+gene_df <- merge(gene_df,gene,by='SYMBOL')
+head(gene_df)
+#     SYMBOL       logFC ENTREZID
+# 1     A1BG  0.06575477        1
+# 2 A1BG-AS1 -0.02881001   503538
+# 3     A1CF -0.05084698    29974
+# 4      A2M  0.06471498        2
+# 5  A2M-AS1  0.13557040   144571
+# 6    A2ML1  0.10653129   144568
+## geneList 三部曲
+## 1.获取基因logFC
+geneList <- gene_df$logFC
+## 2.命名
+names(geneList) = gene_df$ENTREZID
+## 3.排序很重要
+geneList = sort(geneList, decreasing = TRUE)
+
+
+# 5.运行GSEA分析
+# 
+# 从GESA(https://www.gsea-msigdb.org/gsea/downloads.jsp)的官网上，下载一个gmt文件
+
+library(clusterProfiler)
+## 读入hallmarks gene set，从哪来？ 这边要下载entrezid版本
+hallmarks <- read.gmt('../../new_analyse_24_4_17/gsea/h.all.v2023.2.Hs.entrez.gmt')
+# 需要网络
+y <- GSEA(geneList,TERM2GENE =hallmarks)
+# 作图看整体分布
+
+### 看整体分布library(ggplot2)
+dotplot(y,showCategory=12,split='.sign')+facet_grid(~.sign)
+dotplot(y,showCategory=50,split='.sign')+facet_grid(~.sign)+
+  
+  # 调整字体大小
+  theme(
+    axis.title = element_text(size = 14),  # 坐标轴标题字体大小
+    axis.text = element_text(size = 12),   # 坐标轴刻度标签字体大小
+    strip.text = element_text(size = 14),  # 分面标签字体大小
+    legend.title = element_text(size = 12),  # 图例标题字体大小
+    legend.text = element_text(size = 10)    # 图例文本字体大小
+  )
+# 6.特定通路作图
+
+yd <- data.frame(y)
+
+library(enrichplot)
+gseaplot2(y,'HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION',color = 'red',pvalue_table = T)
+gseaplot2(y,'HALLMARK_TGF_BETA_SIGNALING',color = 'red',pvalue_table = T)
+gseaplot2(y,'HALLMARK_NOTCH_SIGNALING',color = 'red',pvalue_table = T)
+gseaplot2(y,'HALLMARK_WNT_BETA_CATENIN_SIGNALING',color = 'red',pvalue_table = T)
+gseaplot2(y,'HALLMARK_PI3K_AKT_MTOR_SIGNALING',color = 'red',pvalue_table = T)
+gseaplot2(y,'HALLMARK_GLYCOLYSIS',color = 'red',pvalue_table = T)
+gseaplot2(y,'HALLMARK_OXIDATIVE_PHOSPHORYLATION',color = 'red',pvalue_table = T)
+gseaplot2(y,'HALLMARK_OXIDATIVE_PHOSPHORYLATION',color = 'red',pvalue_table = T)
+
+##对于多个通路绘制在一起：：：
+pathway=c("HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION","HALLMARK_TGF_BETA_SIGNALING","HALLMARK_WNT_BETA_CATENIN_SIGNALING","HALLMARK_PI3K_AKT_MTOR_SIGNALING","HALLMARK_NOTCH_SIGNALING","HALLMARK_GLYCOLYSIS","HALLMARK_OXIDATIVE_PHOSPHORYLATION")
+gseaplot2(y,pathway,color = c('red',"blue"),pvalue_table = F)
+
+#
+save(yd,y,file = "../101机器学习/得到模型后续分析/GSEA_riskscore_用的是gse58812去计算_24_8_30.Rdata")

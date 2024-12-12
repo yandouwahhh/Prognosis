@@ -1,0 +1,330 @@
+# OR
+distribution_OR <- function(
+    meta_data,
+    celltype_column,
+    celltype_level = NULL,
+    condition_column,
+    condition_level = NULL
+){
+  library(tidyverse)
+
+  colnames(meta_data)[which(colnames(meta_data) == celltype_column)] = "celltypE"
+  colnames(meta_data)[which(colnames(meta_data) == condition_column)] = "conditioN"
+  
+  if(is.null(celltype_level)){
+    meta_data$celltypE = as.character(meta_data$celltypE)
+    meta_data$celltypE = factor(meta_data$celltypE,levels = sort(unique(meta_data$celltypE)))
+  } else {
+    meta_data$celltypE = factor(meta_data$celltypE,levels = celltype_level)
+  }
+  
+  if(is.null(condition_level)) {
+    meta_data$conditioN = as.character(meta_data$conditioN)
+    meta_data$conditioN = factor(meta_data$conditioN,levels = sort(unique(meta_data$conditioN)))
+  } else {
+    meta_data$conditioN = factor(meta_data$conditioN,levels = condition_level)
+  }
+
+  count.dist = as.data.frame(table(meta_data$celltypE,meta_data$conditioN))
+  count.dist = spread(count.dist,key = Var2,value = Freq)
+  rownames(count.dist) = count.dist$Var1
+  count.dist$Var1 =NULL
+  count.dist = as.matrix(count.dist)
+
+  #原来test.res <- test_dist_table(count.dist)#####################
+  #改为合并函数的写法
+  library(data.table)
+  
+  sum.col <- colSums(count.dist)
+  sum.row <- rowSums(count.dist)
+  count.dist.DT <- as.data.frame(count.dist)
+  setDT(count.dist.DT,keep.rownames=T)
+  
+  count.dist.DT.melt <- data.table::melt(count.dist.DT,id.vars="rn")
+  colnames(count.dist.DT.melt) <- c("rid","cid","count")
+  
+  
+  library(plyr)
+  test.res <- as.data.table(
+    ldply(
+      seq_len(nrow(count.dist.DT.melt)), function(i){
+        this.row <- count.dist.DT.melt$rid[i]
+        this.col <- count.dist.DT.melt$cid[i]
+        this.c <- count.dist.DT.melt$count[i]
+        
+        this.m <- matrix(
+          c(this.c,
+            sum.row[this.row]-this.c,
+            sum.col[this.col]-this.c,
+            sum(sum.col)-sum.row[this.row]-sum.col[this.col]+this.c),
+          ncol=2)
+        #这个列联表的排布是固定的，不能变：
+        #                  this celltype | not this celltype
+        #     this tissue|      a       |         c
+        #not this tissue|      b       |         d
+        
+        #OR<0.5越不倾向在该组织中分布
+        #OR>1.5越倾向在该组织分布
+        #阈值不固定
+        tmp.res <- fisher.test(this.m)
+        data.frame(
+          rid=this.row,
+          cid=this.col,
+          p.value=tmp.res$p.value,
+          OR=tmp.res$estimate # 约为 a*d / b*c
+        )
+      }
+    )
+  )
+  
+  test.res <- merge(count.dist.DT.melt,test.res,by=c("rid","cid"))
+  test.res[,adj.p.value:=p.adjust(p.value,"BH")]
+  test.res = as.data.frame(test.res)
+
+  #############################################################
+  dist.p <- reshape2::dcast(test.res,rid~cid,value.var="p.value")
+  dist.OR <- reshape2::dcast(test.res,rid~cid,value.var="OR")
+  dist.p.adj <- reshape2::dcast(test.res,rid~cid,value.var="adj.p.value")
+  rownames(dist.p) = dist.p$rid
+  rownames(dist.OR) = dist.OR$rid
+  rownames(dist.p.adj) = dist.p.adj$rid
+  dist.p$rid=NULL
+  dist.OR$rid=NULL
+  dist.p.adj$rid=NULL
+  
+  return(list(
+      "dist.p"=dist.p,
+      "dist.OR"=dist.OR,
+      "dist.p.adj"=dist.p.adj))
+}
+
+
+
+
+
+
+#### cellchat
+sce=CreateSeuratObject(counts = sce@assays$RNA@counts,meta.data = sce@meta.data)
+DefaultAssay(sce)
+#
+scRNAlist=sce
+DimPlot(scRNAlist,reduction = "tsne",label = T)
+table(scRNAlist@active.ident)
+table(scRNAlist@meta.data$forth_integrated_bcell_6_17)  ## 11种细胞类型
+Idents(scRNAlist)=scRNAlist$forth_integrated_bcell_6_17
+
+data.input  <- scRNAlist@assays$RNA@data
+
+table(scRNAlist@meta.data$Tissue)
+# ER   HER2 Normal   TNBC 
+# 67668  46078  54614  21951 
+
+meta = scRNAlist@meta.data # a dataframe with rownames containing cell mata data
+#cell.use = rownames(meta)[meta$orig.ident == c("HC1","HC2")] # extract the cell names from disease data
+# cell.use = rownames(subset(scRNAlist@meta.data,tissue=="LN"))
+# Prepare input data for CelChat analysis
+# data.input = data.input[, cell.use]
+# meta = meta[cell.use, ]  ## 
+# meta = data.frame(labels = meta$labels[cell.use], row.names = colnames(data.input)) # manually create a dataframe consisting of the cell labels
+unique(meta$forth_integrated_bcell_6_17) # check the cell labels 也是11种细胞类型
+# cell_type就是labels
+
+
+colnames(meta)[17]="labels"
+
+## 创建CellChat 对象
+cellchat <- createCellChat(object = data.input, meta = meta, group.by = "labels")
+# Create a CellChat object from a data matrix
+# Set cell identities for the new CellChat object
+# The cell groups used for CellChat analysis are  C32_Neutrophils C35_CMP CD14+ Mono CD4+ Tcells CD8+ Tcells DCs erythroid precursors FCGR3A+ Mono Naive Bcells NK pDC Plasma Bcells Platelets 
+
+
+
+## 将细胞信息添加到对象的meta slot中
+## 如果在创建cellchat对象时未添加细胞meta信息，用户也可以稍后添加该信息，并使用setIdent设置该对象默认的细胞标识。
+cellchat <- addMeta(cellchat, meta = meta)
+cellchat <- setIdent(cellchat, ident.use = "labels") # set "labels" as default cell identity
+levels(cellchat@idents) # show factor levels of the cell labels
+groupSize <- as.numeric(table(cellchat@idents)) # number of cells in each cell group
+
+
+
+## 设置配体受体交互数据库
+## 我们的数据库 CellChatDB 是一个手动整理的文献支持的配体受体在人和小鼠中的交互数据库。
+## 小鼠中的CellChatDB包含2，021个经验证的分子相互作用，包括60%的自分泌/旁分泌信号相互作用、21%的细胞外基质（ECM）受体相互作用和19%的细胞-细胞接触相互作用
+## 人的CellChatDB包含1，939个经验证的分子相互作用，包括61.8%的自分泌/旁分泌信号相互作用、21.7%的细胞外基质（ECM）受体相互作用和16.5%的细胞-细胞接触相互作用
+# CellChatDB <- CellChatDB.human # use CellChatDB.mouse if running on mouse data
+CellChatDB <- CellChatDB.human
+showDatabaseCategory(CellChatDB)
+# Show the structure of the database
+dplyr::glimpse(CellChatDB$interaction)
+#> Rows: 1,939
+#> Columns: 11
+#> $ interaction_name   <chr> "TGFB1_TGFBR1_TGFBR2", "TGFB2_TGFBR1_TGFBR2", "TGF…
+#> $ pathway_name       <chr> "TGFb", "TGFb", "TGFb", "TGFb", "TGFb", "TGFb", "T…
+#> $ ligand             <chr> "TGFB1", "TGFB2", "TGFB3", "TGFB1", "TGFB1", "TGFB…
+#> $ receptor           <chr> "TGFbR1_R2", "TGFbR1_R2", "TGFbR1_R2", "ACVR1B_TGF…
+#> $ agonist            <chr> "TGFb agonist", "TGFb agonist", "TGFb agonist", "T…
+#> $ antagonist         <chr> "TGFb antagonist", "TGFb antagonist", "TGFb antago…
+#> $ co_A_receptor      <chr> "", "", "", "", "", "", "", "", "", "", "", "", ""…
+#> $ co_I_receptor      <chr> "TGFb inhibition receptor", "TGFb inhibition recep…
+#> $ evidence           <chr> "KEGG: hsa04350", "KEGG: hsa04350", "KEGG: hsa0435…
+#> $ annotation         <chr> "Secreted Signaling", "Secreted Signaling", "Secre…
+#> $ interaction_name_2 <chr> "TGFB1 - (TGFBR1+TGFBR2)", "TGFB2 - (TGFBR1+TGFBR2…
+colnames(CellChatDB$interaction)
+table(CellChatDB$interaction$annotation)
+# Cell-Cell Contact       ECM-Receptor Secreted Signaling 
+# 319                421               1199 
+CellChatDB$interaction[1:4,1:4]
+head(CellChatDB$cofactor)
+head(CellChatDB$complex)
+head(CellChatDB$geneInfo)
+unique(CellChatDB$interaction$annotation)
+# [1] "Secreted Signaling" "ECM-Receptor"      
+# [3] "Cell-Cell Contact" 
+# use a subset of CellChatDB for cell-cell communication analysis
+# CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling") # use Secreted Signaling
+
+# CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling") #只看分泌性的
+# use all CellChatDB for cell-cell communication analysis
+CellChatDB.use <- CellChatDB # simply use the default CellChatDB
+
+# set the used database in the object
+cellchat@DB <- CellChatDB.use  ##
+
+
+
+
+##预处理用于细胞通信分析的表达数据
+cellchat <- subsetData(cellchat) # 取出表达数据
+# cellchat <- subsetData(cellchat，features = NULL) # 这边可以选择感兴趣的基因
+## 不想改成多线程
+future::plan("multisession", workers = 1) # do parallel
+cellchat <- identifyOverExpressedGenes(cellchat)  ## 寻找高表达基因
+cellchat <- identifyOverExpressedInteractions(cellchat)  ## 寻找高表达的通路
+future::plan("multisession", workers = 1)
+# cellchat <- projectData(cellchat, PPI.human) ##投影倒PPI
+cellchat <- projectData(cellchat, PPI.human)
+## 我们这边是基因，但是有的时候基因跟蛋白质不一定对得上，还有一个可能是基因有的不会翻译成蛋白质
+## 这边做了一个投影到PPI相当于做了一个翻译的过程
+
+
+
+# 第二部分
+## 细胞通信网络的推断
+## 计算通信概率并推断cellchat网络
+cellchat <- computeCommunProb(cellchat, raw.use = TRUE)
+?computeCommunProb
+## 这边raw.use 如果选FALSE,则这一步是用上面计算的蛋白质的结果计算
+## 如果raw.use选TRUE，则这一步是用基因的矩阵计算
+# Filter out the cell-cell communication if there are only few number of cells in certain cell groups
+## 在computeCommunProb中，我们提供了一个选项，用于使用其他方法
+## 默认情况下，CellChat 使用一种统计学上强大的均值方法，称为"trimean"，
+## "trimean"大约是25%的截断平均值，这意味着如果一组表达细胞的百分比低于25%，则平均基因表达为零【为0的这些基因就不会再纳入细胞通讯的一个计算】。
+## 要使用 10% 截断的平均值，用户可以设置type = "truncatedMean"和对trim = 0.1。
+
+cellchat <- filterCommunication(cellchat, min.cells = 10) #去掉通讯数量很少的细胞
+df.net <- subsetCommunication(cellchat)  ##将细胞通讯预测结果以数据框的形式取出
+# write.csv(df.net,'../../../../Breastcancer_EMBOJ/emboj_预后模型毕业/cellchat/cellchat_all/02.df.net_all.csv')
+# df.net <- subsetCommunication(cellchat)  ##返回一个数据框架，该数据框架由配体/受体级别的所有推断细胞通信组成。设置slot.name = "netP"可以在信号通路级别访问推断的通信
+# df.netp <- subsetCommunication(cellchat,solt.name="netP") ##只取通路，数据结构更简单
+levels(cellchat@idents)
+
+
+# 推测的每个"配体-受体"对的细胞间通信网络和每个"信号通路"分别存储在“net”和“netP”槽中。
+
+
+## 在信号通路级别推断细胞-细胞通信
+## CellChat 通过总结与每个信号通路相关的所有配体-受体相互作用的通信概率，来计算信号通路级别上的通信概率。
+## NB：每个配体受体对和每个信号通路的推断细胞间通信网络分别存储在插槽"net"和"netP"中。
+cellchat <- computeCommunProbPathway(cellchat)
+# 计算整合的细胞通信网络
+# 我们可以通过计算链接数或汇总通信概率来计算整合的细胞通信网络。用户还可以通过设置sources.use和targets.use`
+cellchat <- aggregateNet(cellchat)
+cellchat@netP$pathways   ##看看有哪些信号通路
+# [1] "COLLAGEN"  "LAMININ"   "FN1"       "MIF"       "CD99"      "MK"        "CXCL"     
+# [8] "APP"       "THBS"      "ANGPTL"    "CCL"       "NOTCH"     "PTN"       "TENASCIN" 
+# [15] "FGF"       "MPZ"       "GAS"       "ESAM"      "PERIOSTIN" "SEMA3"     "GRN"      
+# [22] "CD46"      "PDGF"      "PROS"      "GALECTIN"  "ADGRE5"    "ANGPT"     "SELL"     
+# [29] "NT"        "TWEAK"     "TGFb"      "CADM"      "SEMA5"     "JAM"       "ITGB2"    
+# [36] "EGF"       "HSPG"      "BMP"       "NEGR"      "IGF"       "AGRN"
+head(cellchat@LR$LRsig)  ##看看具体的配受体情况
+# 我们还可以可视化整合的细胞通信网络。例如，使用圆图显示任意两个细胞组之间的相互作用次数或总交互强度（比重）。
+groupSize <- as.numeric(table(cellchat@idents))
+par(mfrow = c(1,2), xpd=TRUE)  ##设置图片的一个布局
+netVisual_circle(cellchat@net$count, vertex.weight = groupSize, weight.scale = T,
+                 label.edge= F, title.name = "Number of interactions")  ##互作的数量
+netVisual_circle(cellchat@net$weight, vertex.weight = groupSize, weight.scale = T,
+                 label.edge= F, title.name = "Interaction weights/strength")  ##互作的强度
+
+#
+save(cellchat,file = "../../../Breastcancer_EMBOJ/emboj_预后模型毕业/cellchat/cellchat_all/cellchat_TNBC.Rdata")
+## 互作数量和重要性图
+## 由于细胞通信网络复杂，
+## 我们可以检查每个细胞组发送的信号。在这里，我们还控制参数edge.weight.max，以便我们可以比较不同网络之间的边缘权重。
+#
+# load("~/my_prepare/lfr_finally/Breastcancer_EMBOJ/emboj_预后模型毕业/cellchat/cellchat_all/cellchat_all.Rdata") # 这是原来拿所有组计算的，包括er,her2,tnbc,normal
+
+# 提取和可视化细胞通讯数量
+# 提取通讯数量数据
+# 假设你想显示前10个通讯对，可以这样做：
+# # 计算通讯对的总数
+# total_communications <- length(cellchat@net$prob)
+# 
+# # 计算前10个通讯对的比例
+# top_ratio <- 10 / total_communications
+# 
+# # 调用函数，显示前10个通讯对
+# netVisual_circle(cellchat, top = 0.1, weight.scale = TRUE)
+
+# 提取和整理数据
+net_analysis <- cellchat@net$count
+net_analysis=as.data.frame(net_analysis)
+net_analysis$sum=rowSums(net_analysis)
+#
+# 根据求和列排名
+df=net_analysis
+df$rank <- rank(-df$sum)  # 使用负号进行降序排名
+#
+# 选择前10行
+top10 <- head(df[order(df$rank), ], 10)
+
+# 绘制直方图
+top10$celltype=rownames(top10)
+library(ggplot2)
+pal_material("light-green",alpha = 0.9)(10)
+[1] "#F1F8E9E5" "#DCECC7E5" "#C5E0A5E5" "#ADD480E5" "#9BCC65E5" "#8BC34AE5" "#7BB241E5"
+[8] "#679F38E5" "#548B2EE5" "#33681EE5"
+pal_material("light-blue",alpha = 0.9)(10)
+[1] "#E0F4FEE5" "#B2E5FCE5" "#80D3F9E5" "#4EC3F7E5" "#28B6F6E5" "#02A9F3E5" "#029AE5E5"
+[8] "#0187D1E5" "#0177BDE5" "#00579AE5"
+pal_material("blue",alpha = 0.9)(10)
+[1] "#E3F2FDE5" "#BADEFAE5" "#90CAF8E5" "#64B4F6E5" "#41A5F4E5" "#2096F2E5" "#1E87E5E5"
+[8] "#1976D2E5" "#1465BFE5" "#0C46A0E5"
+pal_material("red",alpha = 0.9)(10)
+[1] "#FFEBEDE5" "#FFCCD2E5" "#EE9999E5" "#E57272E5" "#EE5250E5" "#F34335E5" "#E53934E5"
+[8] "#D22E2EE5" "#C52727E5" "#B71B1BE5"
+ggplot(top10, aes(x = reorder(celltype, -sum), y = sum, fill = celltype)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(x = "Cell Type", y = "Communication Count", title = "Top 10 Cell Types by Interactions Count") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  scale_fill_manual(values = pal_material("light-green",alpha = 0.9)(10) )
+# Top10里面有一个要改，Emt
+rownames(top10)[7]="EMT_like_CAF"
+colnames(top10)[12]="EMT_like_CAF"
+top10[7,31]="EMT_like_CAF"
+ggplot(top10, aes(x = reorder(celltype, -sum), y = sum, fill = celltype)) +
+  geom_bar(stat = "identity") +
+  theme_minimal() +
+  labs(x = "Cell Type", y = "Communication Count", title = "Top 10 Cell Types by Interactions Count") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  scale_fill_manual(values = c("iCAF"="#33681EE5",myCAF="#548B2EE5",Pericyte="#679F38E5",Edothelials="#7BB241E5",
+                               VSMC="#8BC34AE5",Myepithelials="#9BCC65E5",EMT_like_CAF="#ADD480E5",Macrophage="#C5E0A5E5", cDC2="#DCECC7E5",cDC3="#eff7e8"
+    ))+
+  theme(panel.grid = element_blank(), # 移除所有网格线
+        axis.line = element_line(color = "grey"), # 添加横纵坐标轴
+        plot.title = element_text(hjust = 0.5)
+        ) 
+
+
